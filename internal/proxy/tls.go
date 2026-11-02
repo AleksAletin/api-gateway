@@ -67,13 +67,16 @@ func exactDomains(domains []string) []string {
 	return out
 }
 
-// metricsOverHTTPHandler отдаёт /metrics напрямую (мидлварь внутри main
-// проверяет metrics_allowed_ips), а остальные запросы отправляет на редирект
-// HTTP→HTTPS. Нужно, чтобы дашборд мог скрейпить метрики по внутренней сети
-// без TLS (autocert требует SNI и не работает по IP).
+// metricsOverHTTPHandler отдаёт /metrics и /metrics/prometheus напрямую
+// (мидлварь внутри main проверяет metrics_allowed_ips), а остальные запросы
+// отправляет на редирект HTTP→HTTPS. Нужно, чтобы дашборд и monitoring-glue
+// могли скрейпить метрики по внутренней сети без TLS (autocert требует SNI и
+// не работает по IP). Раньше по HTTP отдавался только /metrics, поэтому
+// Prometheus-путь уезжал в https://<ip>:80 и скрейп падал.
 func metricsOverHTTPHandler(main, redirect http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metrics" {
+		switch r.URL.Path {
+		case "/metrics", "/metrics/prometheus":
 			main.ServeHTTP(w, r)
 			return
 		}

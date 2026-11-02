@@ -136,6 +136,8 @@ func TestMetricsOverHTTPHandler(t *testing.T) {
 		want int
 	}{
 		{"/metrics", http.StatusOK},
+		{"/metrics/prometheus", http.StatusOK},
+		{"/metrics/other", http.StatusMovedPermanently},
 		{"/", http.StatusMovedPermanently},
 		{"/api/blog", http.StatusMovedPermanently},
 	} {
