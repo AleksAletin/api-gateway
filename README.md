@@ -86,13 +86,22 @@ service discovery по labels Docker/Podman.
 - **Раздача статики / SPA** — с fallback на `index.html` и поддержкой flat-HTML экспорта (Next.js)
 - **Service discovery** — обнаружение бэкендов по labels контейнеров (Docker/Podman), в стиле Traefik
 - **Вебхуки/NATS** — публикация событий `on_request`/`on_response`
-- **Graceful shutdown**, структурированное логирование (Zap), метрики, трейсинг (OpenTelemetry)
+- **Compile-time модули (`xgate`)** — сборка бинарника с выбранными модулями в духе `xcaddy`: DNS-01 провайдеры, auth-коннекторы, discovery, HTTP-middleware; манифест `xgate.yaml`, lock-файл, `xgate list`
+- **Матчеры маршрутов** — `path_regex` (RE2), совпадение по заголовкам и query-параметрам; комбинируются по И
+- **Политики балансировки и ретраи** — `round_robin`/`random`/`least_conn`/`ip_hash`/`sticky` (cookie `xg_target` с HMAC-подписью); ретраи идемпотентных методов на транспортных ошибках
+- **h2c/gRPC, HTTP/3 и gzip** — cleartext HTTP/2 к бэкендам (`protocol: h2c`), QUIC-листенер для клиентов, сжатие ответов
+- **Федерация идентичности** — приём внешних JWT (HS*, RS/ES по удалённому `jwks_url`) с маппингом на внутреннего пользователя
+- **Метрики** — `/metrics` (expvar) и `/metrics/prometheus` с гистограммами, allowlist по IP и CIDR
+- **Admin API и mTLS** — loopback-статус с атомарным reload; отдельный mTLS-листенер для воркеров (`/api/v1/workers/*`)
+- **Graceful shutdown**, структурированное логирование (Zap), трейсинг (OpenTelemetry)
 
 ## Документация
 
 - [Быстрый старт](docs/api-gateway-quickstart.md) — минимальный конфиг, запуск локально и в Docker, проверка.
 - [Конфигурация](docs/api-gateway-configuration.md) — полный справочник: все секции и поля, значения по умолчанию, примеры.
 - [Сценарии](docs/api-gateway-scenarios.md) — типовые задачи: авторизация, RBAC, аудит, права, discovery, балансировка.
+- [xgate](docs/xgate.md) — сборка с compile-time модулями; [индекс модулей](docs/modules.md).
+- [Дашборд](docs/api-gateway-dashboard.md) — read-only обзор конфигурации, discovery и метрик.
 
 Онлайн-версия с навигацией: [sarnas.ru/docs/api-gateway](https://sarnas.ru/docs/api-gateway).
 
@@ -131,7 +140,8 @@ go build -o bin/xgate ./cmd/xgate
 bin/xgate build --with github.com/acme/gateway-module@v1.0.0 --output bin/api-gateway-custom
 ```
 
-Подробнее — [`docs/xgate.md`](docs/xgate.md).
+Подробнее — раздел [«Модули и сборщик xgate»](#модули-и-сборщик-xgate) ниже и
+[`docs/xgate.md`](docs/xgate.md).
 
 ### Проверка конфигурации
 
@@ -149,11 +159,20 @@ api-gateway -config /etc/proxy/config.yaml -check
 api-gateway -config /etc/proxy/config.yaml -check -strict
 ```
 
+Переменные `${VAR}` в конфиге должны быть определены в окружении: нераскрытая
+переменная — ошибка загрузки (fail fast), а не тихий литерал. Неизвестные ключи
+YAML не валят запуск, но печатаются предупреждениями (с `-strict` — ошибкой).
+
 В контейнере: `docker run --rm -v ./config.yaml:/etc/proxy/config.yaml ghcr.io/sarnas-it/api-gateway:latest -check`.
 
 ## Конфигурация
 
 Полный справочник по всем полям — в [документации](docs/api-gateway-configuration.md); рабочий пример со всеми секциями — в [`config.local.example.yaml`](config.local.example.yaml).
+
+Секции верхнего уровня: `application`, `server`, `compression`, `plugins`,
+`http3`, `admin`, `tls`, `static`, `targets`, `jwt`, `basic_auth`, `logging`,
+`headers`, `routing`, `permissions`, `webhooks`, `discovery`, `identity`.
+Длительности — строки Go duration (`500ms`, `5s`, `5m`).
 
 ### Пример маршрутов
 
@@ -248,6 +267,217 @@ curl --cert worker.crt --key worker.key \
   TLS-handshake (ошибка `certificate verify failed`/`bad certificate` означает,
   что CA ещё не принят гейтвеем).
 - **Серверный** сертификат общий с `:443` и продлевается autocert автоматически.
+
+## JWT-аутентификация, роли и федерация идентичности
+
+Токен принимается из `Authorization: Bearer …` или cookie `cml_access` и
+проверяется криптографически на каждом запросе: HMAC (`HS256/384/512`) по
+`jwt.secret_key` или RSA/ECDSA/Ed25519 по `jwt.public_key_file`. Опционально
+проверяются `exp`, `iss`, `aud`.
+
+Токен можно требовать глобально (`jwt.required`) и на маршруте
+(`auth.required`). На маршруте без требования невалидный токен игнорируется —
+запрос идёт как анонимный; на требующем — `401`.
+
+Роли читаются из claim `roles` (строка или массив строк): `auth.roles` —
+достаточно **любой** из перечисленных, `auth.roles_all` — нужны **все**; если
+заданы оба списка, должны выполняться оба условия.
+
+Claims маппятся в заголовки для бэкендов (`jwt.claim_mappings` +
+`headers.claim_to_header`), `headers.strip_authorization` и
+`auth.strip_token` убирают токен из проксируемого запроса, а
+`headers.sign_header` и per-route `sign_v3` добавляют HMAC-подпись
+идентичности для внутренних сервисов.
+
+Секция `identity` принимает **внешние** JWT партнёрских провайдеров (свой
+`secret_key`/`public_key_file` либо RS/ES по удалённому `jwks_url`) и маппит
+их на внутреннего пользователя: резолв по `(subject_provider, sub)` с фолбэком
+на email через passport user-lookup с кешем (`identity.user_lookup`). Дальше
+такой запрос идёт как обычный аутентифицированный — с ролями, заголовками и
+permissions.
+
+## Маршрутизация: матчеры, балансировка, ретраи
+
+Матчеры правила складываются по И: `host` (в т.ч. wildcard `*.example.com`),
+`methods`, `headers`, `query` и один из `path_prefix`/`path_regex` (RE2,
+компилируется при загрузке конфига — ошибка в выражении роняет старт и
+`-check`). Из подходящих правил выигрывает более специфичное: сначала правило
+с `host`, затем с бо́льшим числом header/query-матчеров, затем `path_regex`,
+затем более длинный `path_prefix`.
+
+Правила с одинаковыми матчерами и разными таргетами образуют пул
+балансировки. Политика пула — `lb_policy`: `round_robin` (по умолчанию,
+взвешенный), `random`, `least_conn` (по активным запросам к таргету),
+`ip_hash` (детерминированно по IP клиента), `sticky` (привязка через cookie
+`xg_target` с HMAC-подписью процесса — клиент её не читает и не подделывает).
+`retries: 1..5` повторяет идемпотентные методы (GET/HEAD/OPTIONS/TRACE) при
+транспортной ошибке.
+
+Для маршрутов с большими телами (WebDAV и подобные) на правиле задаются свои
+`max_request_body_size`, `read_timeout`/`write_timeout`, `preserve_host` и
+`buffer_request_body: false` (стриминг без обрезания, но аудит-вебхуки такое
+тело не увидят) — см.
+[пример](docs/api-gateway-configuration.md#маршруты-с-большими-телами-webdav-и-подобные).
+
+## Рейт-лимитинг
+
+Два уровня: per-route `rate_limit` — token bucket на IP клиента (IP берётся из
+`X-Forwarded-For` только от доверенных прокси `server.trusted_proxies`, иначе
+из `RemoteAddr`), и `routing.global_limit` — один лимит на весь процесс.
+Per-route отвечает `429` без `Retry-After`, глобальный — `429` с
+`Retry-After: 1`. Лимитеры по IP очищаются после часа простоя.
+
+## CORS
+
+`headers.cors` — allowlist источников: точный origin отражается и получает
+`Access-Control-Allow-Credentials`, `*` возвращается без credentials, origin
+вне списка CORS-заголовков не получает. Любой `OPTIONS` обрабатывается как
+preflight и отвечает `200`. В `application.env: dev` при отсутствии секции
+`cors` включается мягкий режим с отражением origin.
+
+## Basic Auth
+
+`basic_auth` защищает служебные пути: constant-time сравнение по SHA-256 от
+логина и пароля, исключения — `skip_paths` (точное совпадение или префикс
+`путь/`). Стоит во внешнем слое цепочки, поэтому закрывает всё, включая
+`/metrics` и статику; после успешной проверки заголовок `Authorization`
+удаляется из проксируемого запроса.
+
+## HTTPS и автоматические сертификаты (ACME)
+
+Секция `tls` поднимает HTTPS с сертификатами Let's Encrypt: точные домены
+обслуживает autocert (HTTP-01/TLS-ALPN-01), wildcard (`*.example.com`) —
+certmagic через DNS-01. DNS-01 провайдеры: встроенный `regru` и libdns-модули,
+собранные через `xgate --with` (Cloudflare, deSEC, DigitalOcean, Route53 — см.
+«Модули и сборщик xgate»). Запускаются два сервера: HTTPS на `port` и HTTP на
+`http_port` для ACME-challenge и редиректа; `staging: true` или свой
+`directory_url` — для отладки и других ACME-провайдеров.
+
+Дополнительно: TLS-политика (`min_version`, `cipher_suites`, `curves`), mTLS
+на основном листенере (`client_auth` + `client_ca_file`) и отдельный
+mTLS-листенер для воркеров (`worker_port` — описан выше в «Конфигурации»).
+Полный справочник полей — в
+[документации](docs/api-gateway-configuration.md#tls).
+
+## Модули и сборщик xgate
+
+`xgate` — compile-time сборщик в духе `xcaddy`: генерирует `main.go` с
+blank-импортами выбранных модулей и собирает бинарник. Рантайм-плагинов нет —
+на горячем пути нулевой overhead, а ядро (проксирование, JWT, RBAC,
+rate limit, аудит) остаётся встроенным.
+
+```bash
+go build -o bin/xgate ./cmd/xgate
+
+bin/xgate build \
+  --with code.sarnas.ru/xgate-modules/dns-cloudflare=./modules/dns/cloudflare \
+  --output bin/api-gateway-custom
+```
+
+`--with module[@version][=replacement]` можно повторять; без версии берётся
+latest, `=../path` подставляет локальный форк. Сборка идёт во временном
+Go-модуле с `replace` на локальный исходник шлюза — `go.mod` рабочего
+репозитория не меняется. Вместо десятка `--with` — манифест `xgate.yaml`
+(пример — [`xgate.example.yaml`](xgate.example.yaml)); после сборки рядом
+пишется `xgate.lock` с `source_sha`, выбранными модулями и полным
+транзитивным графом зависимостей. `xgate list` показывает манифест,
+зафиксированные версии и число зависимостей.
+
+### Типы модулей
+
+Модуль — обычный Go-пакет, который регистрируется в `init()` через
+`plugin.Register` и реализует один из интерфейсов [`pkg/plugin`](pkg/plugin):
+
+| Тип | Интерфейс | Как включается |
+|---|---|---|
+| DNS-01 провайдер | `plugin.DNSProvider` | `tls.dns_provider: "<name>"` |
+| Auth-коннектор | `plugin.AuthConnector` | `auth.connector: "<name>"` на маршруте |
+| Discovery-провайдер | `plugin.DiscoveryProvider` | `discovery.module: "<name>"` |
+| HTTP middleware | `plugin.HTTPMiddleware` (`Wrap`) | оборачивает HTTP/HTTPS/HTTP/3 листенеры |
+
+Параметры модуля — секция `plugins.<name>` конфига, читаются в
+`Configure(map[string]string)`; неизвестное имя — ошибка запуска. Секции
+применяются один раз до старта листенеров: `SIGHUP` их не перечитывает, после
+правки `plugins:` нужен рестарт.
+
+Auth-коннектор — единственный аутентификатор своего маршрута (JWT для него не
+проверяется): модуль возвращает claims (`id`, опционально `email` и `roles`),
+которые дальше идут тем же путём, что и JWT — маппинг в заголовки, роли,
+permissions, подпись. Нет identity или ошибка коннектора — `401`.
+
+### Встроенные модули
+
+| Модуль | Тип | Каталог |
+|---|---|---|
+| Cloudflare | DNS-01 | `modules/dns/cloudflare` |
+| deSEC | DNS-01 | `modules/dns/desec` |
+| DigitalOcean | DNS-01 | `modules/dns/digitalocean` |
+| Route53 | DNS-01 | `modules/dns/route53` |
+| Статичные API-ключи | auth-коннектор | `modules/apikey` |
+| Файловый discovery | discovery | `modules/file` |
+| Шаблон middleware | HTTP middleware | `modules/example` |
+
+Свой модуль: скопируйте `modules/example`, реализуйте нужный интерфейс,
+зарегистрируйте в `init()`. Подробно — [`docs/xgate.md`](docs/xgate.md),
+индекс модулей — [`docs/modules.md`](docs/modules.md), замысел экосистемы —
+[`docs/plugin-ecosystem.md`](docs/plugin-ecosystem.md).
+
+## Протоколы и сжатие
+
+- **h2c/gRPC**: `server.h2c: true` включает cleartext HTTP/2 на клиентском
+  листенере, `protocol: h2c` у таргета — HTTP/2 к бэкенду (стриминг и
+  trailers передаются; TLS к gRPC-бэкенду пока не поддерживается).
+- **HTTP/3 (QUIC)**: `http3.enabled: true` поднимает UDP-листенер на том же
+  TLS-конфиге и добавляет `Alt-Svc: h3` в ответы HTTP/1.1/2. Нужен проброс
+  UDP и достаточный `net.core.rmem_max`.
+- **gzip**: `compression.enabled: true` сжимает ответы для клиентов с
+  `Accept-Encoding: gzip` (уровень и `min_size` настраиваются); `Vary:
+  Accept-Encoding` добавляется автоматически.
+
+## Статика и SPA
+
+Секция `static` раздаёт файлы до проксирования (но после глобального лимита):
+SPA fallback на `index_file` для несуществующих путей, плоские `.html`
+(`about.html` для `/about`), `Cache-Control: max-age` из `max_age`. Пути из
+`skip_prefixes` уходят в прокси; если маршрут совпал с правилом, у которого
+задан `Host`, статика пропускается — host-based роутинг работает и при
+смонтированной статике.
+
+## Надёжность: health checks и circuit breaker
+
+`application.health_check: true` включает фоновые проверки таргетов, у которых
+задан `health_check` (путь или полный URL); нездоровый таргет исключается из
+пула балансировки до восстановления. `application.circuit_breaker: true`
+размыкает цепь на ошибках транспорта (502/503/504 дополнительно считаются
+сбоем таргета) и проверяет восстановление half-open пробой.
+
+## Permission-сервис
+
+При `permissions.enabled: true` шлюз подмешивает в проксируемый запрос
+заголовок с эффективными разрешениями пользователя (`header_name`, по
+умолчанию `X-User-Permissions`): из проверенной identity берётся claim `id`,
+вызывается `{method} {service_url}{path}` (плейсхолдер `{user_id}`
+обязателен), результат кешируется по пользователю на `cache_ttl`. Метод, путь
+и заголовок API-ключа (`api_key_header`) настраиваются; по умолчанию —
+`GET .../api/v1/users/{user_id}/effective-permissions` с `X-API-Key`.
+
+Любая ошибка permission-сервиса (сеть, таймаут, не-200) не блокирует запрос —
+он идёт дальше без заголовка. Кеш сбрасывается через
+`POST /_cache/permissions/invalidate` с токеном `X-Invalidate-Token`:
+`?user_id=42` — одного пользователя, без параметра — весь кеш. Контракт
+сервиса и все поля — в
+[справочнике](docs/api-gateway-configuration.md#permissions).
+
+## Вебхуки и аудит
+
+Секция `webhooks` публикует события `on_request`/`on_response` в HTTP-вебхук
+или NATS: фильтры по методам, кодам ответа (`on_status_codes`) и
+`exclude_paths`; тело запроса (`changes`) и ответа (`response_body`)
+включаются опционально — только валидный JSON, ответ до 64 KiB.
+HTTP-вебхуки поддерживают батчинг (`batch_size`, `flush_interval`) с
+ограниченной очередью и backpressure; `async: true` убирает отправку с
+горячего пути запроса. Структура события и примеры — в
+[справочнике](docs/api-gateway-configuration.md#webhooks).
 
 ## Service discovery (Docker/Podman)
 
@@ -418,6 +648,35 @@ docker run -p 8080:8080 \
   -v $(pwd)/config.local.yaml:/etc/proxy/config.yaml \
   api-gateway
 ```
+
+## Наблюдаемость: метрики, логи, трейсинг, admin API
+
+`application.metrics_enabled: true` включает метрики и открывает два
+эндпоинта: `/metrics` (expvar, для дашборда) и `/metrics/prometheus`
+(Prometheus-формат с гистограммой `gateway_request_duration_seconds`,
+счётчиками и gauge; лейбл `route` укрупнён, чтобы не раздувать
+кардинальность). По умолчанию метрики выключены — сбор добавляет работу на
+каждый запрос.
+
+Доступ к обоим ограничивается `application.metrics_allowed_ips` — точные IP и
+CIDR-диапазоны (`["10.0.0.5", "172.30.0.0/24"]`); пустой список снимает
+ограничение. В TLS-режиме `/metrics` и `/metrics/prometheus` отвечают и на
+HTTP-порту для разрешённых IP, чтобы мониторинг мог скрейпить их по внутренней
+сети без сертификата; остальные запросы на HTTP-порту уходят в редирект на
+HTTPS. Если включён глобальный `basic_auth`, он защищает и метрики — см.
+«Панель метрик» в разделе «Дашборд».
+
+Логирование — Zap: `logging.level`, `logging.format` (`json` или `console`;
+неверное значение — ошибка запуска), построчный `access_log` выключен по
+умолчанию из-за аллокаций на горячем пути. Трейсинг OpenTelemetry включается
+переменной окружения `OTEL_EXPORTER_OTLP_ENDPOINT`, pprof — `PPROF_ADDR`.
+
+`admin.enabled: true` поднимает loopback admin API (`127.0.0.1:2019`):
+`GET /health`, `GET /status`, `GET /config` (без секретов), `POST /reload` —
+атомарно применяет то, что можно менять на лету (`targets`, `routing`,
+лимиты, CORS, static, headers…); изменение immutable-полей отклоняется с
+`requires restart`, старый конфиг сохраняется. То же перечитывание делает
+`SIGHUP`; `SIGINT`/`SIGTERM` — graceful shutdown с таймаутом 30 секунд.
 
 ## Дашборд
 
