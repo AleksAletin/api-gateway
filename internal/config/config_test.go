@@ -2077,3 +2077,55 @@ plugins:
 		t.Fatalf("plugins = %v", cfg.Plugins)
 	}
 }
+
+func TestValidate_TargetRest(t *testing.T) {
+	base := `
+targets:
+  - name: api
+    url: http://api:9001
+    rest:
+%s
+`
+	for _, tc := range []struct {
+		name    string
+		rest    string
+		wantErr bool
+	}{
+		{"enabled defaults", "      enabled: true\n", false},
+		{"valid bounds", "      enabled: true\n      base: 30s\n      max: 5m\n", false},
+		{"negative base", "      enabled: true\n      base: -1s\n", true},
+		{"max below base", "      enabled: true\n      base: 10m\n      max: 1m\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempConfig(t, fmt.Sprintf(base, tc.rest))
+			cfg, _, err := Load(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error for invalid rest config")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			rest := cfg.Targets[0].Rest
+			if rest == nil || !rest.Enabled {
+				t.Fatalf("rest = %+v", rest)
+			}
+		})
+	}
+}
+
+func TestRestConfigDefaults(t *testing.T) {
+	r := &RestConfig{Enabled: true}
+	if r.EffectiveBase() != time.Minute {
+		t.Fatalf("base = %v, want 1m", r.EffectiveBase())
+	}
+	if r.EffectiveMax() != 30*time.Minute {
+		t.Fatalf("max = %v, want 30m", r.EffectiveMax())
+	}
+	var nilRest *RestConfig
+	if nilRest.EffectiveBase() != time.Minute || nilRest.EffectiveMax() != 30*time.Minute {
+		t.Fatal("nil rest must yield defaults")
+	}
+}

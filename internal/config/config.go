@@ -319,6 +319,39 @@ type TargetConfig struct {
 	// Protocol — протокол к бэкенду: "" (HTTP/1.1) или "h2c" (cleartext HTTP/2,
 	// в том числе gRPC). h2c требует http:// URL.
 	Protocol string `yaml:"protocol"`
+	// Rest — «отдых» таргета в пуле при ответах 429/503. nil или
+	// enabled: false — поведение выключено (по умолчанию).
+	Rest *RestConfig `yaml:"rest,omitempty"`
+}
+
+// RestConfig настраивает вывод таргета из выбора в пуле («отдых») при
+// ответах 429 и 503. Ответ с заголовком Retry-After выводит таргет ровно на
+// указанное время (не дольше max); без заголовка пауза начинается с base и
+// удваивается при повторах подряд (потолок — max); если с прошлого отдыха
+// прошло больше max, счёт начинается заново с base. Отдых не меняет
+// circuit breaker и health check: это мягкое исключение из пула, а не
+// нездоровье. Если отдыхают все кандидаты пула, запрос идёт тому, кто
+// вернётся раньше всех.
+type RestConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	Base    time.Duration `yaml:"base"` // пауза без Retry-After; по умолчанию 1m
+	Max     time.Duration `yaml:"max"`  // потолок паузы и окно сброса; по умолчанию 30m
+}
+
+// EffectiveBase возвращает стартовую паузу без Retry-After (по умолчанию 1m).
+func (r *RestConfig) EffectiveBase() time.Duration {
+	if r == nil || r.Base <= 0 {
+		return time.Minute
+	}
+	return r.Base
+}
+
+// EffectiveMax возвращает потолок паузы (по умолчанию 30m).
+func (r *RestConfig) EffectiveMax() time.Duration {
+	if r == nil || r.Max <= 0 {
+		return 30 * time.Minute
+	}
+	return r.Max
 }
 
 // EffectiveWeight возвращает действующий вес таргета: nil трактуется как 1
@@ -1063,6 +1096,14 @@ func (c *Config) validate() error {
 			}
 			if target.TLS.CAFile != "" && target.TLS.InsecureSkipVerify {
 				return fmt.Errorf("target %s: tls.ca_file and tls.insecure_skip_verify are mutually exclusive", target.Name)
+			}
+		}
+		if target.Rest != nil {
+			if target.Rest.Base < 0 || target.Rest.Max < 0 {
+				return fmt.Errorf("target %s: rest.base and rest.max must be non-negative", target.Name)
+			}
+			if target.Rest.Max > 0 && target.Rest.Max < target.Rest.EffectiveBase() {
+				return fmt.Errorf("target %s: rest.max must be >= rest.base", target.Name)
 			}
 		}
 	}

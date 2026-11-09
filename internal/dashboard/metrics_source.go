@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,12 +21,43 @@ const (
 
 // MetricsSummary is a snapshot of the gateway's expvar /metrics output.
 type MetricsSummary struct {
-	Loaded            bool             `json:"loaded"`
-	ScrapedAt         time.Time        `json:"scraped_at"`
-	ActiveRequests    int64            `json:"active_requests"`
-	RateLimitDenials  int64            `json:"rate_limit_denials_total"`
-	RequestsTotal     map[string]int64 `json:"requests_total"`
-	RequestDurationMS map[string]int64 `json:"request_duration_ms"`
+	Loaded            bool              `json:"loaded"`
+	ScrapedAt         time.Time         `json:"scraped_at"`
+	ActiveRequests    int64             `json:"active_requests"`
+	RateLimitDenials  int64             `json:"rate_limit_denials_total"`
+	RequestsTotal     map[string]int64  `json:"requests_total"`
+	RequestDurationMS map[string]int64  `json:"request_duration_ms"`
+	TargetRestUntil   map[string]int64  `json:"target_rest_until,omitempty"`
+	TargetRestReason  map[string]string `json:"target_rest_reason,omitempty"`
+}
+
+// RestTargetView is one row of the "resting targets" panel.
+type RestTargetView struct {
+	Name   string `json:"name"`
+	Until  string `json:"until"`
+	Reason string `json:"reason"`
+}
+
+// RestingTargets lists targets whose rest deadline is still in the future,
+// soonest return first.
+func (m *MetricsSummary) RestingTargets() []RestTargetView {
+	if m == nil {
+		return nil
+	}
+	now := time.Now().Unix()
+	var rows []RestTargetView
+	for name, until := range m.TargetRestUntil {
+		if until <= now {
+			continue
+		}
+		rows = append(rows, RestTargetView{
+			Name:   name,
+			Until:  time.Unix(until, 0).Format("15:04:05 02.01.2006"),
+			Reason: m.TargetRestReason[name],
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Until < rows[j].Until })
+	return rows
 }
 
 // ScrapeMetrics fetches and parses the gateway /metrics expvar text with a
@@ -91,6 +123,12 @@ func parseMetrics(data []byte) (*MetricsSummary, error) {
 		case "gateway_request_duration_ms":
 			recognized = true
 			m.RequestDurationMS = parseMap(value)
+		case "gateway_target_rest_until":
+			recognized = true
+			m.TargetRestUntil = parseMap(value)
+		case "gateway_target_rest_reason":
+			recognized = true
+			m.TargetRestReason = parseStringMap(value)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -114,6 +152,14 @@ func parseMap(v string) map[string]int64 {
 	out := map[string]int64{}
 	if err := json.Unmarshal([]byte(v), &out); err != nil {
 		return map[string]int64{}
+	}
+	return out
+}
+
+func parseStringMap(v string) map[string]string {
+	out := map[string]string{}
+	if err := json.Unmarshal([]byte(v), &out); err != nil {
+		return map[string]string{}
 	}
 	return out
 }

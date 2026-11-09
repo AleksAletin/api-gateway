@@ -87,14 +87,16 @@ func (rc *RouteConfig) pickTarget(cbEnabled bool, hashKey ...string) *TargetProx
 		sum := 0
 		for i, tp := range rc.Targets {
 			w := rc.weights[i]
-			if w <= 0 || !tp.eligible(cbEnabled) {
+			if w <= 0 || !tp.eligible(cbEnabled) || tp.resting() {
 				continue
 			}
 			healthy = append(healthy, candidate{target: tp, weight: w})
 			sum += w
 		}
 		if sum <= 0 {
-			return nil
+			// Все кандидаты заняты отдыхом: отдаём запрос тому, кто
+			// вернётся раньше всех, а не 503.
+			return rc.pickEarliestResting(cbEnabled)
 		}
 
 		chosen := healthy[len(healthy)-1].target
@@ -169,6 +171,13 @@ type TargetProxy struct {
 	failureThreshold int
 	cbLastFailure    time.Time
 	cbTimeout        time.Duration
+
+	// Состояние «отдыха» (rest): отдельно от circuit breaker — таргет
+	// здоров, но пул временно его пропускает. См. rest.go.
+	restUntil  time.Time
+	restCount  int
+	lastRestAt time.Time
+	restReason string
 
 	halfOpenProbe atomic.Bool
 	active        atomic.Int64
@@ -583,6 +592,7 @@ func (mp *MultiProxy) newReverseProxy(target *TargetProxy) *httputil.ReverseProx
 					target.recordCall(nil)
 				}
 			}
+			mp.noteTargetRest(target, resp)
 			mp.setCORSHeaders(resp.Header, resp.Request)
 			mp.logger.Debug("Received response from target",
 				zap.String("target", target.config.Name),

@@ -3,7 +3,9 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 )
 
 const sampleMetrics = `gateway_active_requests 3
@@ -66,5 +68,26 @@ func TestScrapeMetricsNonOK(t *testing.T) {
 
 	if _, err := ScrapeMetrics(srv.URL); err == nil {
 		t.Fatal("ScrapeMetrics() error = nil, want error for non-200 response")
+	}
+}
+
+func TestParseMetricsTargetRest(t *testing.T) {
+	until := time.Now().Add(2 * time.Minute).Unix()
+	payload := "gateway_active_requests 1\n" +
+		"gateway_target_rest_until {\"api\": " + strconv.FormatInt(until, 10) + ", \"old\": 1000}\n" +
+		"gateway_target_rest_reason {\"api\": \"503 (Retry-After)\"}\n"
+	m, err := parseMetrics([]byte(payload))
+	if err != nil {
+		t.Fatalf("parseMetrics() error = %v", err)
+	}
+	if m.TargetRestUntil["api"] != until {
+		t.Fatalf("TargetRestUntil[api] = %d, want %d", m.TargetRestUntil["api"], until)
+	}
+	resting := m.RestingTargets()
+	if len(resting) != 1 || resting[0].Name != "api" {
+		t.Fatalf("RestingTargets = %+v, want only api (old is in the past)", resting)
+	}
+	if resting[0].Reason != "503 (Retry-After)" {
+		t.Fatalf("Reason = %q", resting[0].Reason)
 	}
 }
