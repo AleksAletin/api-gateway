@@ -204,7 +204,7 @@ tls:
   port: 443
   http_port: 80
   domains:
-    - "tracker.sarnas.ru"
+    - "gw.example.co"
   email: "admin@example.com"
   cache_dir: "/var/lib/api-gateway/certs"
   # Отдельный mTLS-листенер для воркеров; 0 — выключен.
@@ -230,7 +230,7 @@ tls:
 # 1. CA (срок 10 лет)
 openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
   -keyout worker-ca.key -out worker-ca.pem \
-  -subj "/CN=sarnas-worker-ca"
+  -subj "/CN=example-worker-ca"
 
 # 2. Ключ и CSR хоста воркеров (CN — идентификатор хоста)
 openssl req -newkey rsa:2048 -sha256 -nodes \
@@ -242,15 +242,15 @@ openssl x509 -req -in worker.csr -CA worker-ca.pem -CAkey worker-ca.key \
   -CAcreateserial -days 365 -sha256 -out worker.crt
 ```
 
-Воркер ходит строго на `https://tracker.sarnas.ru:8444` и предъявляет
+Воркер ходит строго на `https://gw.example.co:8444` и предъявляет
 `worker.crt` + `worker.key`:
 
 ```bash
 curl --cert worker.crt --key worker.key \
-  https://tracker.sarnas.ru:8444/api/v1/workers/heartbeat
+  https://gw.example.co:8444/api/v1/workers/heartbeat
 ```
 
-Порт `8444` должен быть открыт в firewall, а `tracker.sarnas.ru` — входить в
+Порт `8444` должен быть открыт в firewall, а `gw.example.co` — входить в
 `tls.domains` (иначе autocert не выпустит сертификат для SNI).
 
 Без клиентского сертификата (или с сертификатом чужой CA) TLS-handshake
