@@ -71,6 +71,13 @@ targets:
     timeout: 10s
     path_prefix: "/api/v1/auth"
     strip_prefix: false
+    # «Отдых» таргета в пуле по 429/503 (по умолчанию выключен):
+    # с Retry-After — пауза ровно на указанное время (потолок max),
+    # без него — base с удвоением при повторах, сброс после max тишины.
+    # rest:
+    #   enabled: true
+    #   base: 1m
+    #   max: 30m
 
   - name: "client-api"
     url: "http://localhost:9002"

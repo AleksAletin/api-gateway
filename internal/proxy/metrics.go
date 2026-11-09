@@ -22,16 +22,19 @@ type Metrics struct {
 	requestDuration  *expvar.Map
 	rateLimitDenials *expvar.Int
 	targetUp         *expvar.Map
+	targetRestUntil  *expvar.Map
+	targetRestReason *expvar.Map
 	activeRequests   int64
 	mu               sync.RWMutex
 
-	registry     *prometheus.Registry
-	promRequests *prometheus.CounterVec
-	promDuration *prometheus.HistogramVec
-	promActive   prometheus.Gauge
-	promDenials  prometheus.Counter
-	promTargetUp *prometheus.GaugeVec
-	promHandler  http.Handler
+	registry            *prometheus.Registry
+	promRequests        *prometheus.CounterVec
+	promDuration        *prometheus.HistogramVec
+	promActive          prometheus.Gauge
+	promDenials         prometheus.Counter
+	promTargetUp        *prometheus.GaugeVec
+	promTargetRestUntil *prometheus.GaugeVec
+	promHandler         http.Handler
 }
 
 func NewMetrics(enabled bool) *Metrics {
@@ -43,6 +46,8 @@ func NewMetrics(enabled bool) *Metrics {
 	m.requestDuration = expvar.NewMap("gateway_request_duration_ms")
 	m.rateLimitDenials = expvar.NewInt("gateway_rate_limit_denials_total")
 	m.targetUp = expvar.NewMap("gateway_target_up")
+	m.targetRestUntil = expvar.NewMap("gateway_target_rest_until")
+	m.targetRestReason = expvar.NewMap("gateway_target_rest_reason")
 	// Регистрируем один раз: повторный expvar.NewInt с тем же именем паникует,
 	// а Handler() вызывается на каждый запрос /metrics.
 	expvar.NewInt("gateway_active_requests")
@@ -69,7 +74,11 @@ func NewMetrics(enabled bool) *Metrics {
 		Name: "gateway_target_up",
 		Help: "Target health (1 = up, 0 = down).",
 	}, []string{"target"})
-	m.registry.MustRegister(m.promRequests, m.promDuration, m.promActive, m.promDenials, m.promTargetUp)
+	m.promTargetRestUntil = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gateway_target_rest_until_seconds",
+		Help: "Unix timestamp when the target returns to the pool after a 429/503 rest; a past value means the target is not resting.",
+	}, []string{"target"})
+	m.registry.MustRegister(m.promRequests, m.promDuration, m.promActive, m.promDenials, m.promTargetUp, m.promTargetRestUntil)
 	m.promHandler = promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 	return m
 }
@@ -125,6 +134,22 @@ func (m *Metrics) SetTargetUp(name string, up bool) {
 	m.targetUp.Set(name, &expvar.Int{})
 	m.targetUp.Add(name, val)
 	m.promTargetUp.WithLabelValues(name).Set(float64(val))
+}
+
+// SetTargetRest публикует момент возврата отдыхающего таргета и причину
+// отдыха. Gauge с датой в прошлом читается как «таргет не отдыхает» —
+// отдельного сброса метрики по истечении не требуется.
+func (m *Metrics) SetTargetRest(name string, until time.Time, reason string) {
+	if !m.enabled {
+		return
+	}
+	untilVar := new(expvar.Int)
+	untilVar.Set(until.Unix())
+	m.targetRestUntil.Set(name, untilVar)
+	reasonVar := new(expvar.String)
+	reasonVar.Set(reason)
+	m.targetRestReason.Set(name, reasonVar)
+	m.promTargetRestUntil.WithLabelValues(name).Set(float64(until.Unix()))
 }
 
 func (m *Metrics) IncActiveRequests() {

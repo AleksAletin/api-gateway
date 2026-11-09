@@ -89,7 +89,7 @@ func (mp *MultiProxy) pickTargetForRequest(rc *RouteConfig, cbEnabled bool, r *h
 	if rc.lbPolicy == "sticky" {
 		if c, err := r.Cookie(stickyCookieName); err == nil {
 			if name, ok := parseSticky(c.Value); ok {
-				if tp := rc.targetByName(name); tp != nil && tp.eligible(cbEnabled) && tp.acquire(cbEnabled) {
+				if tp := rc.targetByName(name); tp != nil && !tp.resting() && tp.eligible(cbEnabled) && tp.acquire(cbEnabled) {
 					return tp
 				}
 			}

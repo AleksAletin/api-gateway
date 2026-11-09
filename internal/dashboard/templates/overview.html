@@ -166,6 +166,13 @@
       <tbody>{{range $key, $val := .Metrics.RequestDurationMS}}<tr><td><code>{{$key}}</code></td><td>{{$val}}</td></tr>{{end}}</tbody>
     </table>
     {{else}}<p class="empty">нет данных</p>{{end}}
+    {{if .Metrics.RestingTargets}}
+    <h3>Отдых таргетов (429/503)</h3>
+    <table>
+      <thead><tr><th>Таргет</th><th>Вернётся в пул</th><th>Причина</th></tr></thead>
+      <tbody>{{range .Metrics.RestingTargets}}<tr><td><code>{{.Name}}</code></td><td>{{.Until}}</td><td>{{.Reason}}</td></tr>{{end}}</tbody>
+    </table>
+    {{end}}
     {{else}}
     <p class="empty">Источник отключён или недоступен.</p>
     {{end}}
