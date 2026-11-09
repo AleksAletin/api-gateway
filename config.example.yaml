@@ -120,6 +120,15 @@ routing:
       auth:
         required: true
 
+    # Partner-API ЦМЛ: машинный контур учёток в passport-service.
+    # Аутентификация — X-Partner-Key, проверяется самим passport;
+    # пользовательский JWT и подстановка X-User-* не нужны.
+    - path_prefix: "/api/v1/partner/cml"
+      target_name: "passport"
+      strip_path: false
+      auth:
+        required: false
+
     - path_prefix: "/api/fgis"
       target_name: "fgis-syncer"
       strip_path: true
