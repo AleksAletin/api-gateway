@@ -12,10 +12,18 @@ import (
 	"code.sarnas.ru/api-gateway/internal/jwtutil"
 )
 
+var (
+	// ErrSubjectNotAvailable — у провайдера с валидной подписью не удалось
+	// установить пользователя по (subject_provider, sub). Отдельная ошибка,
+	// чтобы отказ по идентичности был отличим от «токен не наш».
+	ErrSubjectNotAvailable = errors.New("identity: subject identity is not verified")
+	// ErrNoProviderMatched — ни один провайдер не принял токен.
+	ErrNoProviderMatched = errors.New("identity: no provider matched")
+)
+
 type provider struct {
 	name            string
 	validator       *jwtutil.JWTValidator
-	emailClaim      string
 	subjectClaim    string
 	subjectProvider string
 }
@@ -60,6 +68,13 @@ func NewManager(cfg config.IdentityConfig, logger *zap.Logger) (*Manager, error)
 		if pc.SubjectClaim == "" {
 			pc.SubjectClaim = "sub"
 		}
+		// Идентичность устанавливается только по (subject_provider, sub):
+		// провайдер без namespace субъекта не сможет никого резолвить и молча
+		// отдавал бы 401 всему трафику, поэтому это ошибка старта, а не
+		// деградация в рантайме.
+		if strings.TrimSpace(pc.SubjectProvider) == "" {
+			return nil, fmt.Errorf("identity provider %s: subject_provider is required", pc.Name)
+		}
 		var (
 			v   *jwtutil.JWTValidator
 			err error
@@ -83,9 +98,8 @@ func NewManager(cfg config.IdentityConfig, logger *zap.Logger) (*Manager, error)
 		providers = append(providers, provider{
 			name:            pc.Name,
 			validator:       v,
-			emailClaim:      pc.EmailClaim,
 			subjectClaim:    pc.SubjectClaim,
-			subjectProvider: pc.SubjectProvider,
+			subjectProvider: strings.TrimSpace(pc.SubjectProvider),
 		})
 	}
 
@@ -101,6 +115,13 @@ func NewManager(cfg config.IdentityConfig, logger *zap.Logger) (*Manager, error)
 }
 
 // Resolve проверяет токен по выбранным провайдерам и возвращает нашего пользователя.
+//
+// Идентичность внешнего токена устанавливается только по (subject_provider, sub).
+// Claim email здесь не используется: его контролирует тот, кто выпустил токен, и
+// резолв по email позволил бы войти под любым активным пользователем с известным
+// адресом. Провайдер, чья подпись прошла, владеет токеном: он либо резолвит
+// пользователя, либо отказывает — перебирать дальше нельзя, иначе sub одного
+// namespace можно было бы предъявить в namespace другого провайдера.
 func (m *Manager) Resolve(ctx context.Context, token string) (*User, error) {
 	for _, p := range m.providers {
 		claims, err := p.validator.ParseAndValidate(token)
@@ -111,40 +132,43 @@ func (m *Manager) Resolve(ctx context.Context, token string) (*User, error) {
 			continue
 		}
 
-		if p.subjectProvider != "" {
-			if sub, _ := claims[p.subjectClaim].(string); strings.TrimSpace(sub) != "" {
-				user, found, err := m.resolver.bySubject(ctx, p.subjectProvider, sub)
-				if err != nil {
-					m.logger.Warn("identity: subject lookup failed",
-						zap.String("provider", p.name), zap.Error(err))
-				} else if found && user != nil && user.IsActive {
-					m.logger.Info("identity: external token resolved by subject",
-						zap.String("provider", p.name), zap.Int("user_id", user.ID))
-					return user, nil
-				}
-			}
+		subject, _ := claims[p.subjectClaim].(string)
+		subject = strings.TrimSpace(subject)
+		if subject == "" {
+			m.logger.Warn("identity: token has no subject claim",
+				zap.String("provider", p.name),
+				zap.String("claim", p.subjectClaim))
+			return nil, fmt.Errorf("%w: subject claim %q is missing", ErrSubjectNotAvailable, p.subjectClaim)
 		}
 
-		email, _ := claims[p.emailClaim].(string)
-		email = strings.TrimSpace(email)
-		if email == "" {
-			continue
-		}
-
-		user, found, err := m.resolver.byEmail(ctx, email)
+		user, found, err := m.resolver.bySubject(ctx, p.subjectProvider, subject)
 		if err != nil {
-			m.logger.Warn("identity: user lookup failed",
-				zap.String("provider", p.name), zap.Error(err))
-			continue
+			m.logger.Warn("identity: subject lookup failed",
+				zap.String("provider", p.name),
+				zap.String("subject_provider", p.subjectProvider),
+				zap.Error(err))
+			return nil, fmt.Errorf("%w: subject lookup failed", ErrSubjectNotAvailable)
 		}
-		if !found || user == nil || !user.IsActive {
-			continue
+		if !found || user == nil {
+			m.logger.Warn("identity: subject is not mapped",
+				zap.String("provider", p.name),
+				zap.String("subject_provider", p.subjectProvider),
+				zap.String("subject", subject))
+			return nil, fmt.Errorf("%w: subject is not mapped", ErrSubjectNotAvailable)
+		}
+		if !user.IsActive {
+			m.logger.Warn("identity: subject maps to an inactive user",
+				zap.String("provider", p.name),
+				zap.String("subject_provider", p.subjectProvider),
+				zap.String("subject", subject),
+				zap.Int("user_id", user.ID))
+			return nil, fmt.Errorf("%w: subject maps to an inactive user", ErrSubjectNotAvailable)
 		}
 
-		m.logger.Info("identity: external token resolved",
+		m.logger.Info("identity: external token resolved by subject",
 			zap.String("provider", p.name), zap.Int("user_id", user.ID))
 		return user, nil
 	}
 
-	return nil, errors.New("identity: no provider matched")
+	return nil, ErrNoProviderMatched
 }

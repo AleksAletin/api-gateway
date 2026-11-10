@@ -226,11 +226,13 @@ identity:
       validate_exp: true
       validate_iss: false
       expected_iss: ""
-      email_claim: "email"
-      # Резолв по субъекту: passport GET /api/v1/internal/user-by-subject
-      # (provider=<subject_provider>, subject=<sub из токена>), фолбэк — email.
-      # subject_provider — значение auth_provider в passport; пусто = выключено.
-      # subject_provider: "cml"
+      subject_claim: "sub"           # claim с идентификатором субъекта
+      # subject_provider — обязателен для enabled-провайдера: значение
+      # auth_provider в passport. Пользователь резолвится ТОЛЬКО по
+      # (subject_provider, sub) через GET /api/v1/internal/user-by-subject;
+      # резолва по email нет. Токен без sub, с незамапленным субъектом или
+      # выключенным аккаунтом отклоняется (401), а не ищет другой способ входа.
+      subject_provider: "cml"
       # subject_claim: "sub"
 
 headers:

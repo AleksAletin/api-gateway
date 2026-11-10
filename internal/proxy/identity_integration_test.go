@@ -18,8 +18,11 @@ import (
 
 func TestModifyRequest_ExternalTokenMapsToOurUser(t *testing.T) {
 	lookupSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/internal/user-by-email" {
+		if r.URL.Path != "/api/v1/internal/user-by-subject" {
 			t.Errorf("unexpected lookup path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("provider") != "cml" || r.URL.Query().Get("subject") != "uuid-1" {
+			t.Errorf("unexpected lookup query %s", r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"id":42,"email":"partner@example.com","full_name":"P","is_active":true,"roles":["viewer"]}}`))
@@ -40,7 +43,7 @@ func TestModifyRequest_ExternalTokenMapsToOurUser(t *testing.T) {
 		},
 		Providers: []config.IdentityProviderConfig{{
 			Name: "partner", Enabled: true, Algorithm: "HS256",
-			SecretKey: "partner-secret", ValidateExp: true, EmailClaim: "email",
+			SecretKey: "partner-secret", ValidateExp: true, SubjectProvider: "cml",
 		}},
 	}
 
@@ -50,8 +53,8 @@ func TestModifyRequest_ExternalTokenMapsToOurUser(t *testing.T) {
 	}
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"email": "partner@example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"sub": "uuid-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 	signed, _ := tok.SignedString([]byte("partner-secret"))
 
@@ -82,6 +85,9 @@ func TestModifyRequest_ExternalTokenMapsToOurUser(t *testing.T) {
 // Auth.RolesAll is all-of.
 func TestModifyRequest_ExternalTokenRoleGate(t *testing.T) {
 	lookupSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/internal/user-by-subject" {
+			t.Errorf("unexpected lookup path %s", r.URL.Path)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"id":42,"email":"partner@example.com","is_active":true,"roles":["viewer","editor"]}}`))
 	}))
@@ -101,7 +107,7 @@ func TestModifyRequest_ExternalTokenRoleGate(t *testing.T) {
 		},
 		Providers: []config.IdentityProviderConfig{{
 			Name: "partner", Enabled: true, Algorithm: "HS256",
-			SecretKey: "partner-secret", ValidateExp: true, EmailClaim: "email",
+			SecretKey: "partner-secret", ValidateExp: true, SubjectProvider: "cml",
 		}},
 	}
 
@@ -111,8 +117,8 @@ func TestModifyRequest_ExternalTokenRoleGate(t *testing.T) {
 	}
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"email": "partner@example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"sub": "uuid-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 	signed, _ := tok.SignedString([]byte("partner-secret"))
 
@@ -150,6 +156,9 @@ func TestModifyRequest_ExternalTokenRoleGate(t *testing.T) {
 // admin-backend routes (sign_v3) reject external tokens with 401.
 func TestModifyRequest_ExternalTokenAppliesSignV3(t *testing.T) {
 	lookupSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/internal/user-by-subject" {
+			t.Errorf("unexpected lookup path %s", r.URL.Path)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"id":42,"email":"partner@example.com","is_active":true,"roles":["admin"]}}`))
 	}))
@@ -167,7 +176,7 @@ func TestModifyRequest_ExternalTokenAppliesSignV3(t *testing.T) {
 		},
 		Providers: []config.IdentityProviderConfig{{
 			Name: "partner", Enabled: true, Algorithm: "HS256",
-			SecretKey: "partner-secret", ValidateExp: true, EmailClaim: "email",
+			SecretKey: "partner-secret", ValidateExp: true, SubjectProvider: "cml",
 		}},
 	}
 
@@ -177,8 +186,8 @@ func TestModifyRequest_ExternalTokenAppliesSignV3(t *testing.T) {
 	}
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"email": "partner@example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"sub": "uuid-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 	signed, _ := tok.SignedString([]byte("partner-secret"))
 
