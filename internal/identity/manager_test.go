@@ -246,41 +246,50 @@ func TestResolve_BySubjectFirst(t *testing.T) {
 	}
 }
 
-func TestResolve_SubjectMissFallsBackToEmail(t *testing.T) {
-	var subjectCalls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/internal/user-by-subject" {
-			atomic.AddInt32(&subjectCalls, 1)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.URL.Query().Get("email") == "active@example.com" {
-			_, _ = w.Write([]byte(`{"data":{"id":42,"email":"active@example.com","full_name":"A","is_active":true,"roles":["viewer"]}}`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	cfg := managerCfg(srv.URL)
-	cfg.Providers[0].SubjectProvider = "cml"
-	m, err := NewManager(cfg, zap.NewNop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	token := signHS256(t, "partner-secret", jwt.MapClaims{
-		"sub": "unknown-uuid", "email": "active@example.com", "exp": time.Now().Add(time.Hour).Unix(),
-	})
-	u, err := m.Resolve(context.Background(), token)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if u.ID != 42 {
-		t.Fatalf("unexpected user: %+v", u)
-	}
-	if atomic.LoadInt32(&subjectCalls) != 1 {
-		t.Fatalf("expected one subject attempt, got %d", subjectCalls)
+func TestResolve_SubjectFailureNeverFallsBackToEmail(t *testing.T) {
+	for _, scenario := range []string{"missing", "not_found", "inactive", "outage"} {
+		t.Run(scenario, func(t *testing.T) {
+			var emailCalls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/internal/user-by-subject" {
+					switch scenario {
+					case "inactive":
+						_, _ = w.Write([]byte(`{"data":{"id":42,"is_active":false}}`))
+					case "outage":
+						w.WriteHeader(503)
+					default:
+						w.WriteHeader(404)
+					}
+					return
+				}
+				emailCalls.Add(1)
+				_, _ = w.Write([]byte(`{"data":{"id":99,"email":"active@example.com","is_active":true}}`))
+			}))
+			defer srv.Close()
+			cfg := managerCfg(srv.URL)
+			cfg.Providers[0].SubjectProvider = "cml"
+			// An additional provider trusting the same key must not bypass the denial.
+			extra := cfg.Providers[0]
+			extra.Name = "email-only"
+			extra.SubjectProvider = ""
+			cfg.Providers = append(cfg.Providers, extra)
+			cfg.Selection = nil
+			m, err := NewManager(cfg, zap.NewNop())
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims := jwt.MapClaims{"email": "active@example.com", "exp": time.Now().Add(time.Hour).Unix()}
+			if scenario != "missing" {
+				claims["sub"] = "missing-or-blocked"
+			}
+			user, err := m.Resolve(context.Background(), signHS256(t, "partner-secret", claims))
+			if err == nil || user != nil {
+				t.Fatalf("unexpected identity: %+v %v", user, err)
+			}
+			if emailCalls.Load() != 0 {
+				t.Fatal("email fallback was called")
+			}
+		})
 	}
 }
 

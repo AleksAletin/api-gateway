@@ -123,6 +123,11 @@ func (m *Manager) Resolve(ctx context.Context, token string) (*User, error) {
 					return user, nil
 				}
 			}
+
+			// A configured stable identity is authoritative. A miss, disabled
+			// account, or lookup failure must not select another user by email.
+			// Do not try another provider sharing the signing key either.
+			return nil, errors.New("identity: subject is not available")
 		}
 
 		email, _ := claims[p.emailClaim].(string)
