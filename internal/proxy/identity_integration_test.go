@@ -78,6 +78,23 @@ func TestModifyRequest_ExternalTokenMapsToOurUser(t *testing.T) {
 	if got := req.Header.Get("X-User-Signature"); got != want {
 		t.Fatalf("signature mismatch: got %q want %q", got, want)
 	}
+	// Opting in a monitoring route changes only its signature, and signs the
+	// resolved numeric passport ID rather than the untrusted external UUID.
+	req = httptest.NewRequest("POST", "/api/reports/own", nil)
+	req.Header.Set("Authorization", "Bearer "+signed)
+	rule.SignV2 = true
+	if err := mp.modifyRequest(req, &cfg.Targets[0], rule); err != nil {
+		t.Fatal(err)
+	}
+	stamp := req.Header.Get("X-User-Timestamp")
+	if stamp == "" || req.Header.Get("X-User-ID") != "42" {
+		t.Fatal("v2 lost numeric identity")
+	}
+	mac = hmac.New(sha256.New, []byte("php-secret"))
+	mac.Write([]byte("42\nPOST\n/api/reports/own\n" + stamp))
+	if req.Header.Get("X-User-Signature") != hex.EncodeToString(mac.Sum(nil)) {
+		t.Fatal("wrong v2 signature")
+	}
 }
 
 // TestModifyRequest_ExternalTokenRoleGate verifies that the external identity
