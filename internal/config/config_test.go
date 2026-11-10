@@ -1734,6 +1734,7 @@ identity:
       enabled: true
       algorithm: "HS256"
       secret_key: "partner-secret"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	cfg, _, err := Load(path)
@@ -1746,8 +1747,11 @@ identity:
 	if cfg.Identity.UserLookup.CacheTTL != 300*time.Second {
 		t.Fatalf("expected default cache ttl 300s, got %v", cfg.Identity.UserLookup.CacheTTL)
 	}
-	if cfg.Identity.Providers[0].EmailClaim != "email" {
-		t.Fatalf("expected default email_claim email, got %q", cfg.Identity.Providers[0].EmailClaim)
+	if cfg.Identity.Providers[0].SubjectProvider != "cml" {
+		t.Fatalf("expected subject_provider cml, got %q", cfg.Identity.Providers[0].SubjectProvider)
+	}
+	if cfg.Identity.Providers[0].SubjectClaim != "sub" {
+		t.Fatalf("expected default subject_claim sub, got %q", cfg.Identity.Providers[0].SubjectClaim)
 	}
 	if cfg.Identity.Providers[0].SecretKey != "partner-secret" {
 		t.Fatalf("expected partner secret, got %q", cfg.Identity.Providers[0].SecretKey)
@@ -1782,9 +1786,11 @@ identity:
     - name: "dup"
       algorithm: "HS256"
       secret_key: "a"
+      subject_provider: "cml"
     - name: "dup"
       algorithm: "HS256"
       secret_key: "b"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	_, _, err := Load(path)
@@ -1810,6 +1816,7 @@ identity:
       enabled: true
       algorithm: "HS256"
       secret_key: "our-secret"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	_, _, err := Load(path)
@@ -1840,6 +1847,7 @@ identity:
       enabled: true
       algorithm: "HS256"
       secret_key: "php-secret"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	_, _, err := Load(path)
@@ -1870,10 +1878,65 @@ identity:
       enabled: true
       algorithm: "HS256"
       secret_key: "partner-secret"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	if _, _, err := Load(path); err != nil {
 		t.Fatalf("distinct secrets must be accepted, got: %v", err)
+	}
+}
+
+func TestLoad_IdentityProviderWithoutSubjectProviderRejected(t *testing.T) {
+	yaml := `
+targets:
+  - name: "api"
+    url: "http://api:9001"
+identity:
+  enabled: true
+  user_lookup:
+    service_url: "http://passport:8085"
+    hmac_secret: "internal-secret"
+  providers:
+    - name: "partner"
+      enabled: true
+      algorithm: "HS256"
+      secret_key: "partner-secret"
+`
+	path := writeTempConfig(t, yaml)
+	_, _, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for enabled provider without subject_provider")
+	}
+	if !strings.Contains(err.Error(), "partner") || !strings.Contains(err.Error(), "subject_provider") {
+		t.Fatalf("error must name the provider and subject_provider, got: %v", err)
+	}
+}
+
+// Disabled-провайдер остаётся заготовкой: subject_provider от него не требуется.
+func TestLoad_IdentityDisabledProviderWithoutSubjectProviderAllowed(t *testing.T) {
+	yaml := `
+targets:
+  - name: "api"
+    url: "http://api:9001"
+identity:
+  enabled: true
+  user_lookup:
+    service_url: "http://passport:8085"
+    hmac_secret: "internal-secret"
+  providers:
+    - name: "partner"
+      enabled: true
+      algorithm: "HS256"
+      secret_key: "partner-secret"
+      subject_provider: "cml"
+    - name: "draft"
+      enabled: false
+      algorithm: "HS256"
+      secret_key: "draft-secret"
+`
+	path := writeTempConfig(t, yaml)
+	if _, _, err := Load(path); err != nil {
+		t.Fatalf("disabled provider must not require subject_provider, got: %v", err)
 	}
 }
 
@@ -1892,7 +1955,7 @@ identity:
       enabled: true
       algorithm: "RS256"
       jwks_url: "https://cml/.well-known/jwks"
-      email_claim: "email"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	cfg, _, err := Load(path)
@@ -1919,6 +1982,7 @@ identity:
       enabled: true
       algorithm: "HS256"
       secret_key: "partner-secret"
+      subject_provider: "cml"
       jwks_url: "https://cml/.well-known/jwks"
 `
 	path := writeTempConfig(t, yaml)
@@ -1945,6 +2009,7 @@ identity:
     - name: "partner"
       enabled: true
       algorithm: "HS256"
+      subject_provider: "cml"
 `
 	path := writeTempConfig(t, yaml)
 	_, _, err := Load(path)

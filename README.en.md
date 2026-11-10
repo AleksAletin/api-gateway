@@ -160,10 +160,14 @@ internal services.
 
 The `identity` section accepts **external** JWTs from partner providers (their
 own `secret_key`/`public_key_file`, or RSA/ECDSA via a remote `jwks_url`) and
-maps them onto internal users: resolve by `(subject_provider, sub)` with an
-email fallback through a cached passport user lookup (`identity.user_lookup`).
-The request then flows like any authenticated one — roles, headers,
-permissions.
+maps them onto internal users **only** by `(subject_provider, sub)` through a
+cached passport user lookup (`identity.user_lookup`). `subject_provider` is
+required for every enabled provider; `subject_claim` defaults to `sub`. There is
+no email resolution: the `email` claim is controlled by whoever signs the token,
+so trusting it would let them mint a token for any active user's address. A
+valid signature with a missing or unmapped subject, or with a disabled account,
+is denied (`401`) instead of trying another way in. The request then flows like
+any authenticated one — roles, headers, permissions.
 
 ## Routing: matchers, balancing, retries
 

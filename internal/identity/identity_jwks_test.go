@@ -76,8 +76,8 @@ func signRS256(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapClai
 }
 
 func TestResolve_ByJWKSProvider(t *testing.T) {
-	lookup := lookupServer(t)
-	defer lookup.Close()
+	lookup := newFakeLookup(map[string]string{"cml:uuid-jwks": activeUserJSON})
+	lookupSrv := lookup.start(t)
 
 	key := newRSAKey(t)
 	jwks := httptest.NewServer(jwksHandler(t, []rsaJWKEntry{{kid: "cml-1", key: key}}))
@@ -87,11 +87,11 @@ func TestResolve_ByJWKSProvider(t *testing.T) {
 		Enabled:   true,
 		Selection: []string{"cml"},
 		UserLookup: config.IdentityUserLookupConfig{
-			ServiceURL: lookup.URL, HMACSecret: "internal-secret", CacheTTL: time.Minute,
+			ServiceURL: lookupSrv.URL, HMACSecret: "internal-secret", CacheTTL: time.Minute,
 		},
 		Providers: []config.IdentityProviderConfig{{
 			Name: "cml", Enabled: true, Algorithm: "RS256",
-			JwksURL: jwks.URL, ValidateExp: true, EmailClaim: "email",
+			JwksURL: jwks.URL, ValidateExp: true, SubjectProvider: "cml",
 		}},
 	}
 
@@ -101,14 +101,14 @@ func TestResolve_ByJWKSProvider(t *testing.T) {
 	}
 
 	token := signRS256(t, key, "cml-1", jwt.MapClaims{
-		"email": "active@example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"sub": "uuid-jwks",
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 	u, err := m.Resolve(context.Background(), token)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if u.ID != 42 || u.Email != "active@example.com" {
+	if u.ID != 42 || u.Email != "partner@example.com" {
 		t.Fatalf("unexpected user: %+v", u)
 	}
 }

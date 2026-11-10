@@ -31,11 +31,11 @@ func TestLookupClient_FetchFound(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		if r.URL.Path != "/api/v1/internal/user-by-email" {
+		if r.URL.Path != "/api/v1/internal/user-by-subject" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("email") != "partner@example.com" {
-			t.Errorf("unexpected email %s", r.URL.Query().Get("email"))
+		if r.URL.Query().Get("provider") != "cml" || r.URL.Query().Get("subject") != "uuid-1" {
+			t.Errorf("unexpected query %s", r.URL.RawQuery)
 		}
 		uid := r.Header.Get(hmacUserIDHeader)
 		sig := r.Header.Get(hmacSignatureHeader)
@@ -50,7 +50,7 @@ func TestLookupClient_FetchFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newLookupClient(srv.URL, "internal-secret")
-	u, err := c.fetchByEmail(context.Background(), "partner@example.com")
+	u, err := c.fetchBySubject(context.Background(), "cml", "uuid-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestLookupClient_TrailingSlashBaseURL(t *testing.T) {
 	var hit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hit = true
-		if r.URL.Path != "/api/v1/internal/user-by-email" {
+		if r.URL.Path != "/api/v1/internal/user-by-subject" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 		uid := r.Header.Get(hmacUserIDHeader)
@@ -81,7 +81,7 @@ func TestLookupClient_TrailingSlashBaseURL(t *testing.T) {
 	defer srv.Close()
 
 	c := newLookupClient(srv.URL+"/", "internal-secret")
-	u, err := c.fetchByEmail(context.Background(), "partner@example.com")
+	u, err := c.fetchBySubject(context.Background(), "cml", "uuid-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestLookupClient_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newLookupClient(srv.URL, "internal-secret")
-	u, err := c.fetchByEmail(context.Background(), "nobody@example.com")
+	u, err := c.fetchBySubject(context.Background(), "cml", "unknown")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestResolver_CacheHitAndNegative(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		if r.URL.Query().Get("email") == "found@example.com" {
+		if r.URL.Query().Get("subject") == "uuid-found" {
 			_, _ = w.Write([]byte(`{"data":{"id":1,"email":"found@example.com","is_active":true}}`))
 			return
 		}
@@ -123,20 +123,20 @@ func TestResolver_CacheHitAndNegative(t *testing.T) {
 
 	r := newResolver(config0(srv.URL))
 
-	u, found, err := r.byEmail(context.Background(), "found@example.com")
+	u, found, err := r.bySubject(context.Background(), "cml", "uuid-found")
 	if err != nil || !found || u.ID != 1 {
 		t.Fatalf("first lookup failed: u=%+v found=%v err=%v", u, found, err)
 	}
-	_, _, _ = r.byEmail(context.Background(), "found@example.com")
+	_, _, _ = r.bySubject(context.Background(), "cml", "uuid-found")
 	if atomic.LoadInt32(&calls) != 1 {
 		t.Fatalf("expected cache hit (1 call), got %d", atomic.LoadInt32(&calls))
 	}
 
-	_, found, err = r.byEmail(context.Background(), "missing@example.com")
+	_, found, err = r.bySubject(context.Background(), "cml", "uuid-missing")
 	if err != nil || found {
 		t.Fatalf("expected negative result, got found=%v err=%v", found, err)
 	}
-	_, _, _ = r.byEmail(context.Background(), "missing@example.com")
+	_, _, _ = r.bySubject(context.Background(), "cml", "uuid-missing")
 	if atomic.LoadInt32(&calls) != 2 {
 		t.Fatalf("expected negative cache (2 calls), got %d", atomic.LoadInt32(&calls))
 	}
@@ -147,51 +147,5 @@ func config0(serviceURL string) config.IdentityUserLookupConfig {
 		ServiceURL: serviceURL,
 		HMACSecret: "internal-secret",
 		CacheTTL:   time.Minute,
-	}
-}
-
-func TestLookupClient_FetchBySubject(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/internal/user-by-subject" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("provider") != "cml" || r.URL.Query().Get("subject") != "uuid-1" {
-			t.Errorf("unexpected query %s", r.URL.RawQuery)
-		}
-		uid := r.Header.Get(hmacUserIDHeader)
-		sig := r.Header.Get(hmacSignatureHeader)
-		ts := r.Header.Get(hmacTimestampHeader)
-		if !verifyHMACV2(uid, r.Method, r.URL.Path, ts, sig, "internal-secret", time.Now()) {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"id":10,"email":"cml@example.com","full_name":"CML","is_active":true,"roles":["viewer"]}}`))
-	}))
-	defer srv.Close()
-
-	c := newLookupClient(srv.URL, "internal-secret")
-	u, err := c.fetchBySubject(context.Background(), "cml", "uuid-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if u == nil || u.ID != 10 || u.Email != "cml@example.com" || !u.IsActive {
-		t.Fatalf("unexpected user: %+v", u)
-	}
-}
-
-func TestLookupClient_FetchBySubject_NotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	c := newLookupClient(srv.URL, "internal-secret")
-	u, err := c.fetchBySubject(context.Background(), "cml", "unknown")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if u != nil {
-		t.Fatalf("expected nil user, got %+v", u)
 	}
 }

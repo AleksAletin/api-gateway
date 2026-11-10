@@ -543,14 +543,17 @@ type IdentityConfig struct {
 	Providers  []IdentityProviderConfig `yaml:"providers"`
 }
 
-// IdentityUserLookupConfig — резолв email → наш пользователь через passport
+// IdentityUserLookupConfig — резолв (auth_provider, sub) → наш пользователь через passport
 type IdentityUserLookupConfig struct {
 	ServiceURL string        `yaml:"service_url"`
 	HMACSecret string        `yaml:"hmac_secret"`
 	CacheTTL   time.Duration `yaml:"cache_ttl"`
 }
 
-// IdentityProviderConfig — один доверенный внешний JWT-провайдер
+// IdentityProviderConfig — один доверенный внешний JWT-провайдер.
+//
+// SubjectProvider обязателен для enabled-провайдера: пользователь резолвится
+// только по (subject_provider, sub), резолва по email-claim нет.
 type IdentityProviderConfig struct {
 	Name            string `yaml:"name"`
 	Enabled         bool   `yaml:"enabled"`
@@ -562,7 +565,6 @@ type IdentityProviderConfig struct {
 	ValidateExp     bool   `yaml:"validate_exp"`
 	ValidateIss     bool   `yaml:"validate_iss"`
 	ExpectedIss     string `yaml:"expected_iss"`
-	EmailClaim      string `yaml:"email_claim"`
 	SubjectClaim    string `yaml:"subject_claim"`
 	SubjectProvider string `yaml:"subject_provider"`
 }
@@ -926,9 +928,6 @@ func (c *Config) setDefaults() {
 	for i := range c.Identity.Providers {
 		if c.Identity.Providers[i].Algorithm == "" {
 			c.Identity.Providers[i].Algorithm = "HS256"
-		}
-		if c.Identity.Providers[i].EmailClaim == "" {
-			c.Identity.Providers[i].EmailClaim = "email"
 		}
 		if c.Identity.Providers[i].SubjectClaim == "" {
 			c.Identity.Providers[i].SubjectClaim = "sub"
@@ -1308,6 +1307,13 @@ func (c *Config) validate() error {
 			names[p.Name] = true
 			if len(p.Algorithm) < 2 {
 				return fmt.Errorf("identity provider %s: invalid algorithm %q", p.Name, p.Algorithm)
+			}
+			// Enabled-провайдер обязан объявить namespace субъекта: резолв идёт
+			// только по (subject_provider, sub), email-фолбэка нет. Без него
+			// провайдер не смог бы никого резолвить и молча отдавал бы 401
+			// всему своему трафику.
+			if p.Enabled && strings.TrimSpace(p.SubjectProvider) == "" {
+				return fmt.Errorf("identity provider %s: subject_provider is required for enabled providers", p.Name)
 			}
 			algPrefix := strings.ToUpper(p.Algorithm[:2])
 			// jwks_url — только для асимметричных RS*/ES*: по JWK-набору

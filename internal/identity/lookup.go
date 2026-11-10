@@ -61,10 +61,6 @@ func newLookupClient(baseURL, secret string) *lookupClient {
 	}
 }
 
-func (c *lookupClient) fetchByEmail(ctx context.Context, email string) (*User, error) {
-	return c.doFetch(ctx, "/api/v1/internal/user-by-email", url.Values{"email": []string{email}})
-}
-
 func (c *lookupClient) fetchBySubject(ctx context.Context, provider, subject string) (*User, error) {
 	return c.doFetch(ctx, "/api/v1/internal/user-by-subject", url.Values{
 		"provider": []string{provider},
@@ -168,13 +164,7 @@ func newResolver(cfg config.IdentityUserLookupConfig) *resolver {
 	}
 }
 
-// byEmail возвращает (user, found, error). found=false при 404 или кэш-промахе.
-func (r *resolver) byEmail(ctx context.Context, email string) (*User, bool, error) {
-	return r.byKey(ctx, "e:"+email, func() (*User, error) {
-		return r.client.fetchByEmail(ctx, email)
-	})
-}
-
+// bySubject возвращает (user, found, error). found=false при 404 или кэш-промахе.
 func (r *resolver) bySubject(ctx context.Context, provider, subject string) (*User, bool, error) {
 	return r.byKey(ctx, "s:"+provider+":"+subject, func() (*User, error) {
 		return r.client.fetchBySubject(ctx, provider, subject)
