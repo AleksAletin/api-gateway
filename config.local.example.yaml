@@ -136,6 +136,16 @@ routing:
         key_id: "1"
         secret: "change-me"
 
+    # Мониторинг: HMAC v2 подпись (userID\nMETHOD\npath\ntimestamp), секрет —
+    # permissions.api_key. Несовместима с sign_v3; без strip_path — подпись
+    # считается по пути, который увидит бэкенд.
+    # - path_prefix: "/api/reports"
+    #   target_name: "monitoring"
+    #   strip_path: false
+    #   auth:
+    #     required: true
+    #   sign_v2: true
+
     - path_prefix: "/api/v1/auth/refresh"
       target_name: "auth-api"
       methods: ["POST"]

@@ -355,6 +355,8 @@ headers:
 | `retries` | int | `0` | Повторы при транспортной ошибке для GET/HEAD/OPTIONS/TRACE, 0..5 | `1` |
 | `auth` | object | нет | Аутентификация маршрута | см. ниже |
 | `rate_limit` | object | нет | Лимит маршрута | см. ниже |
+| `sign_v3` | object | нет | Per-route HMAC v3 подпись запроса (`X-Service-ID`/`X-Key-ID`/`X-User-Timestamp`/`X-User-Signature`) для бэкендов на go-hmac-auth | см. ниже |
+| `sign_v2` | bool | `false` | Per-route HMAC v2 подпись (мониторинг); секрет — `permissions.api_key`, несовместима с `sign_v3` | `true` |
 | `max_request_body_size` | int | лимит сервера | Лимит тела запроса для маршрута, байты; `0` — без лимита | `536870912` |
 | `read_timeout` | duration | `server.read_timeout` | Дедлайн чтения запроса для маршрута (`http.ResponseController`) | `15m` |
 | `write_timeout` | duration | `server.write_timeout` | Дедлайн записи ответа для маршрута | `1h` |
@@ -393,6 +395,8 @@ routing:
         connector: "apikey"     # модуль, собранный через xgate
         roles: ["admin"]
 ```
+
+`sign_v2: true` подписывает запрос по контракту мониторинга: `HMAC-SHA256(permissions.api_key, userID + "\n" + METHOD + "\n" + path + "\n" + timestamp)` в hex, заголовки `X-User-ID`/`X-User-Timestamp`/`X-User-Signature`. Метод приводится к верхнему регистру. Требует непустой `permissions.api_key` и несовместима с `sign_v3` — обе ошибки ловятся на `--check` и старте. Подпись считается по пути до `strip_path`, поэтому на sign_v2-маршруте префикс обрезать нельзя: бэкенд проверяет подпись по тому пути, который видит.
 
 `rate_limit`: `requests_per_second` (float, token bucket), `burst` (int). `global_limit` имеет те же поля, но применяется ко всем запросам процесса, а не на IP.
 
