@@ -380,7 +380,7 @@ type RoutingRule struct {
 	Auth       *AuthRule      `yaml:"auth,omitempty"`       // per-route auth конфиг
 	RateLimit  *RateLimitRule `yaml:"rate_limit,omitempty"` // per-route rate limit
 	SignV3     *SignV3Config  `yaml:"sign_v3,omitempty"`    // per-route HMAC v3 подпись запроса
-	SignV2     bool           `yaml:"sign_v2,omitempty"`    // timestamped signature for monitoring; uses permissions.api_key
+	SignV2     bool           `yaml:"sign_v2,omitempty"`    // per-route HMAC v2 подпись (мониторинг); секрет — permissions.api_key
 
 	// MaxRequestBodySize — лимит тела запроса для маршрута (байты).
 	// nil — общий server.max_request_body_size, 0 — без лимита.

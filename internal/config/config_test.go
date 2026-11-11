@@ -382,6 +382,40 @@ routing:
 	}
 }
 
+func TestRouting_SignV2Validation(t *testing.T) {
+	base := `
+targets:
+  - name: api
+    url: http://api:9001
+%s
+routing:
+  rules:
+    - path_prefix: "/"
+      target_name: api
+%s
+`
+	for _, tc := range []struct {
+		name        string
+		permissions string
+		sign        string
+	}{
+		{"no api key", "", "      sign_v2: true"},
+		{"coexists with sign_v3", "permissions:\n  api_key: k", "      sign_v2: true\n      sign_v3:\n        service_id: svc\n        secret: s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempConfig(t, fmt.Sprintf(base, tc.permissions, tc.sign))
+			if _, _, err := Load(path); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+
+	path := writeTempConfig(t, fmt.Sprintf(base, "permissions:\n  api_key: k", "      sign_v2: true"))
+	if _, _, err := Load(path); err != nil {
+		t.Fatalf("sign_v2 with api key must load: %v", err)
+	}
+}
+
 func TestPluginsConfig(t *testing.T) {
 	yaml := `
 targets:

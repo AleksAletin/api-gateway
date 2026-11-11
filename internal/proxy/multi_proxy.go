@@ -862,13 +862,16 @@ func (mp *MultiProxy) applySignV3(r *http.Request, claims jwt.MapClaims, rule *c
 	mp.applySignV3ForUser(r, fmt.Sprintf("%v", userIDVal), rule)
 }
 
-// applySignV3ForUser — та же v3-подпись, но с уже известным user id. Нужна
-// внешней идентичности: id резолвится через passport-lookup, а не из claim.
+// applySignV3ForUser — подпись с уже известным user id. Нужна внешней
+// идентичности: id резолвится через passport-lookup, а не из claim.
+// При rule.SignV2 ставит HMAC v2 подпись (userID\nMETHOD\npath\ntimestamp,
+// секрет — permissions.api_key), иначе — per-route HMAC v3.
 func (mp *MultiProxy) applySignV3ForUser(r *http.Request, userIDStr string, rule *config.RoutingRule) {
 	if rule != nil && rule.SignV2 {
 		stamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
 		mac := hmac.New(sha256.New, []byte(mp.config.Load().Permissions.APIKey))
-		mac.Write([]byte(userIDStr + "\n" + r.Method + "\n" + r.URL.Path + "\n" + stamp))
+		mac.Write([]byte(userIDStr + "\n" + strings.ToUpper(r.Method) + "\n" + r.URL.Path + "\n" + stamp))
+		r.Header.Set("X-User-ID", userIDStr)
 		r.Header.Set("X-User-Signature", hex.EncodeToString(mac.Sum(nil)))
 		r.Header.Set("X-User-Timestamp", stamp)
 		return
